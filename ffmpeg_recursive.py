@@ -45,8 +45,8 @@ def create_arg_parser():
     """"Creates and returns the ArgumentParser object."""
 
     parser = argparse.ArgumentParser(description='Description of your app.')
-    parser.add_argument('--thread', '-t',
-                        help="run each worker with 1 thread to allow other processes to work in parallel \
+    parser.add_argument('--background', '-b',
+                        help="run with 1 thread to allow other processes to work in parallel \
                           will run with 1 thread per flag present",
 
                         action='count')
@@ -58,7 +58,7 @@ def create_arg_parser():
 
                         action='store_true')
     parser.add_argument('--worker', '-w',
-                        help='the number of duplicate worker processes spawned, starts at one, each -w flag increments the count by 1',
+                        help='the number of duplicate worker processes spawned',
                         default=1,
                         action='count')
     parser.add_argument('--limit',
@@ -76,6 +76,9 @@ def create_arg_parser():
                         action='store_true')
     parser.add_argument('--ignore_movies', '-m',
                         help='skip fetching movie paths for transcoding',
+                        action='store_true')
+    parser.add_argument('--adaptive', '-a',
+                        help='try to scale number of threads based on active plex sessions',
                         action='store_true')
     # parser.add_argument('--outputDirectory',
     # help='Path to the output that contains the resumes.')
@@ -139,14 +142,11 @@ def NotifySonarrOfSeriesUpdate(seriesId: int = None):
     print("response: {}".format(r.text))
 
 
-def IsPlexBusy():
+def GetPlexSessions() -> int:
     from plexapi.server import PlexServer
     plex = PlexServer(PLEX_URL, PLEX_TOKEN)
     plexSessions = plex.sessions()
-    if len(plexSessions) > 0:
-        return True
-    else:
-        return False
+    return len(plexSessions)
 
 
 def GetSeriesTitles(jsonInput) -> dict:
@@ -237,10 +237,10 @@ def ProcessFile(filePath):
     if meta == 1 or meta == 0:
         return None
     # if container is not mp4 then we need to convert anyway
-    if re.search(".mp4$", filePath) is None:
+    if re.search(".mp4$", filePath) == None:
         PROCESS_THIS = True
 
-    if PROCESS_THIS is False and meta is not None:
+    if PROCESS_THIS == False and meta is not None:
         streams = meta['streams']
         for s in streams:
             if s['codec_type'] == 'audio':
@@ -253,8 +253,9 @@ def ProcessFile(filePath):
                     break
 
     if PROCESS_THIS:
-        logging.info(
-            "{} is candidate for processing (P_Count is {}, P_Limit is {})".format(filePath, P_Counter, P_Limit))
+        if parsed_args.verbose:
+            logging.info(
+                "{} is candidate for processing (P_Count is {}, P_Limit is {})".format(filePath, P_Counter, P_Limit))
         returnCode = convertVideoFile(filePath)
         if returnCode == 0:
             return 0
@@ -267,6 +268,7 @@ def ffmpegArgumentAssembly(sanitizedFileName: str, jsonFileMeta, containerType: 
     argList = list()
     argList.append("-y")
     argList.append("-map 0")
+    argList.append("-copy_unknown")
 
     vArgs = ffmpegVideoConversionArgument(jsonFileMeta)
     if vArgs is not None:
@@ -281,14 +283,16 @@ def ffmpegArgumentAssembly(sanitizedFileName: str, jsonFileMeta, containerType: 
     sArgs = ffmpegSubtitleConversionArgument(jsonFileMeta, containerType)
     if sArgs is not None:
         argList.extend(sArgs)
-    if parsed_args.thread is not None:
-        argList.append(f'-threads {parsed_args.thread}')
+    tArgs = ffmpegAdaptiveThreadCountArgument()
+    if tArgs is not None:
+        argList.extend(tArgs)
+    # if parsed_args.background is not None:
+    #     argList.append(f'-threads {parsed_args.background}')
     # force file overwrite
     # argList.append("-map_metadata 0")
     # add input file
-    if parsed_args.verbose:
-        logging.debug(
-            f"vArgs is {vArgs}; aArgs is {aArgs}; file ends with .mp4 bools is {sanitizedFileName.endswith('.mp4')}")
+    # if parsed_args.verbose == True:
+    #     logging.debug(f"vArgs is {vArgs}; aArgs is {aArgs}; file ends with .mp4 bools is {sanitizedFileName.endswith('.mp4')}")
     if vArgs is None and aArgs is None and re.search(".mp4$|.mkv$", sanitizedFileName) is not None:
         # if all three conditions are met, then we don't need to convert
         return 2
@@ -299,9 +303,46 @@ def ffmpegArgumentAssembly(sanitizedFileName: str, jsonFileMeta, containerType: 
     else:
         joinedArgString = f"ffmpeg -i \'{sanitizedFileName}\' {separator.join(argList)} \'{sanitizedFileName + '.converting.mkv'}\' "
 
-    if parsed_args.verbose:
-        logging.debug(joinedArgString)
+    # if parsed_args.verbose == True:
+    print(f'{joinedArgString}')
+    logging.debug(joinedArgString)
     return joinedArgString
+
+
+def ffmpegAdaptiveThreadCountArgument() -> set:
+    availThreads = os.cpu_count()
+    plexClients = GetPlexSessions()
+    threadArgs = set()
+    if parsed_args.adaptive:
+        if plexClients == 0:
+            if parsed_args.background is None or parsed_args.background == 0:
+                threadArgs.add(f'-threads {availThreads - 1}')
+                return threadArgs
+            else:
+                threadArgs.add(f'-threads {parsed_args.background}')
+                return threadArgs
+        elif 1 >= plexClients > 0:
+            threadArgs.add(f'-threads {availThreads // 1.5}')
+            if parsed_args.verbose:
+                print(f'running with {(availThreads // 1.5)} threads')
+            return threadArgs
+        elif 2 >= plexClients > 1:
+            threadArgs.add(f'-threads {availThreads // 2}')
+            if parsed_args.verbose:
+                print(f'running with {(availThreads // 2)} threads')
+            return threadArgs
+
+        elif plexClients > 2:
+            threadArgs.add(f'-threads {availThreads // 3}')
+            if parsed_args.verbose:
+                print(f'running with {availThreads // 3} threads')
+            return threadArgs
+    else:
+        if parsed_args.background is None or parsed_args.background == 0:
+            return None
+        else:
+            threadArgs.add(f'-threads {parsed_args.background}')
+            return threadArgs
 
 
 def ffmpegVideoConversionArgument(jsonFileMeta):
@@ -311,40 +352,44 @@ def ffmpegVideoConversionArgument(jsonFileMeta):
         streams = jsonFileMeta['streams']
 
         for s in streams:
-            if s['codec_type'] == 'video':
-                # currently only care about it being h264
-                # TODO: add resolution and fps tweaks
-                if s['codec_name'] != 'h264':
-                    videoArgs.add('-vcodec h264')
-                fps: float
-                fpsFrac = s['r_frame_rate']
-                if len(fpsFrac) == 0:
-                    fps = fpsFrac
+            try:
+                if s['codec_type'] == 'video':
+                    # currently only care about it being h264
+                    # TODO: add resolution and fps 
+                    
+                    if s['codec_name'] != 'h264':
+                        videoArgs.add('-vcodec h264')
+                    fps: float
+                    fpsFrac = s['r_frame_rate']
+                    if len(fpsFrac) == 0:
+                        fps = fpsFrac
+                    else:
+                        splitFrac = fpsFrac.split('/')
+                        fps = int(splitFrac[0]) / int(splitFrac[1])
+                    if fps >= 32:
+                        videoArgs.add('-framerate 24')
+                    try:
+                        if s['tags'] is not None:
+                            if s['tags']['mimetype'] is not None:
+                                if s['tags']['mimetype'] == 'image/jpeg':
+                                    videoArgs.add(f"-map -0:{s['index']}")
+                    except Exception as ex:
+                        pass
                 else:
-                    splitFrac = fpsFrac.split('/')
-                    fps = int(splitFrac[0]) / int(splitFrac[1])
-                if fps >= 30:
-                    videoArgs.add('-framerate 24')
-                try:
-                    if s['tags'] is not None:
-                        if s['tags']['mimetype'] is not None:
-                            if s['tags']['mimetype'] == 'image/jpeg':
-                                videoArgs.add(f"-map -0:{s['index']}")
-                except Exception as ex:
                     pass
-            else:
-                pass
+            except Exception as ex:
+                logging.error(f"error processing video args: {ex}")
         if len(videoArgs) == 0:
             return None
         else:
             videoArgs.add('-vsync 2')
-            videoArgs.add('-r 30')
+            videoArgs.add('-r 24')
             videoArgs.add('-max_muxing_queue_size 1000')
-            videoArgs.add('-analyzeduration 25000')
-            videoArgs.add('-probesize 50000000')
+            videoArgs.add('-analyzeduration 200M')
+            videoArgs.add('-probesize 200M')
             return videoArgs
     except Exception as ex:
-        logging.error(ex)
+        logging.error(f"error processing video args: {ex}")
 
 
 def ffmpegAudioConversionArgument(jsonFileMeta):
@@ -365,39 +410,41 @@ def ffmpegAudioConversionArgument(jsonFileMeta):
             else:
                 pass
     except Exception as ex:
-        logging.error(ex)
+        logging.error(f"error processing audio args; error: {ex}")
 
 
 def ffmpegSubtitleConversionArgument(jsonFileMeta, containerType: str):
     # define the rules for audio conversion here
-    if re.search(".mkv$", containerType) is None:
-        try:
-            subtArgs = set()
-            streams = jsonFileMeta['streams']
-            for s in streams:
-                if s['codec_type'] == 'subtitle':
-                    if str(s['codec_name']).casefold() == "dvd_subtitle".casefold():
-                        subtArgs.add(f"-map -0:{s['index']}")
-                    else:
-                        pass
-                    # remove subtitle stream mappings
+    # if re.search(".mkv$", containerType) is None:
+    try:
+        subtArgs = set()
+        streams = jsonFileMeta['streams']
+        for s in streams:
+            if s['codec_type'] == 'subtitle':
+                if s['codec_name'] == 'dvd_subtitle' or s['codec_name'] == 'hdmv_pgs_subtitle':
+                    subtArgs.add(f'-scodec copy')
 
-                    # if s['channels'] != 2:
-                    #     subtArgs.append("-ac 2")
+                #  subtArgs.add(f"-map -0:{s['index']}")
 
-                    # for now just copy subtitles
+                # remove subtitle stream mappings
+                # if s['channels'] != 2:
+                #     subtArgs.append("-ac 2")
 
-                    # if len(subtArgs) == 0:
-                    # tell it not to map subtitles, mp4 doesn't support them as streams anyway
-                    #  subtArgs.append("-scodec copy")
-                else:
-                    pass
-            return subtArgs
-        except Exception as ex:
-            print(ex)
-            logging.error(ex)
-    else:
-        return set()
+                # for now just copy subtitles
+
+                # if len(subtArgs) == 0:
+                # tell it not to map subtitles, mp4 doesn't support them as streams anyway
+                #  subtArgs.append("-scodec copy")
+            else:
+                pass
+        return subtArgs
+    except Exception as ex:
+        print(ex)
+        logging.error(f'error: {ex}')
+
+
+# else:
+#     return set()
 
 
 def SaniString(sInput: str):
@@ -424,10 +471,10 @@ def convertVideoFile(file):
 
     sanitizedString = SaniString(file)
     tempFileName = sanitizedString + ".converting.mp4"
-    if parsed_args.verbose:
-        logging.debug('temp file name is {} ;; sanitized file name is {}'.format(tempFileName, sanitizedString))
+    # if parsed_args.verbose:
+    #     logging.debug('temp file name is {} ;; sanitized file name is {}'.format(tempFileName, sanitizedString))
     try:
-        logging.info("conversion of {} beginning".format(file))
+        # logging.info("conversion of {} beginning".format(file))
         # print("ffmpeg -y -i " + sanitizedString+ " -vcodec copy -ac 2 -acodec aac " + tempFileName)
         convArgs: str
         # if  re.search(".mkv$", file):
@@ -448,16 +495,16 @@ def convertVideoFile(file):
             containerType = ".mkv"
         convArgs = ffmpegArgumentAssembly(sanitizedString, jsonFileMeta, containerType)
         if convArgs == 2:
-            if parsed_args.verbose:
-                logging.debug(f'{file} already meets criteria, skipping')
+            # if parsed_args.verbose == True:
+            #     logging.debug(f'{file} already meets criteria, skipping')
             return 0
 
-        if parsed_args.verbose:
-            logging.debug(f'args: \n {convArgs} \n')
+        # if parsed_args.verbose == True:
+        #     logging.debug(f'args: \n {convArgs} \n')
         # newArgs = convArgs.replace('&', '\&')
         newArgs = convArgs
-        if parsed_args.verbose:
-            logging.debug(f'args:: \\n {newArgs} \\n')
+        # if parsed_args.verbose == True:
+        #     logging.debug(f'args:: \\n {newArgs} \\n')
         convProcess: p = subprocess.Popen(newArgs,
                                           stdout=subprocess.PIPE,
                                           shell=True)
@@ -507,11 +554,12 @@ def convertVideoFile(file):
                     logging.debug(f'moved {tempFileName_unsanitized} over {file}')
                 return 0
         except Exception as ex:
-            logging.error(ex)
+            logging.error(f"error during post processing; internal error: {ex}")
+            print(f"error during post-processing; error: {ex}")
             return 1
         else:
             if file != newFileName:
-                os.remove(file)
+                os.remove(file)  # THIS WILL REMOVE THE NEW ONE IF NEWFILE NAME AND OLDFILE NAME ARE THE SAME!!!!
                 if parsed_args.verbose:
                     logging.debug(f'deleting original file: {file}')
 
@@ -554,11 +602,11 @@ def ScanVideoFiles(jsonResponse):
             logging.exception(ex)
 
 
-def RefreshCache(durationSeconds: int):
+def RefreshCache(duration_Seconds: int):
     global lastCacheRefreshTime
     cacheLifetime: timedelta
     cacheLifetime = datetime.utcnow() - lastCacheRefreshTime
-    if cacheLifetime > timedelta(0, durationSeconds, 0):
+    if cacheLifetime > timedelta(0, duration_Seconds, 0):
         GetRequest("series")
         GetRadarrRequest("movie")
         lastCacheRefreshTime = datetime.utcnow()
@@ -571,6 +619,7 @@ def worker(event):
     global P_Counter
     global P_Limit
     global lastCacheRefreshTime
+    logging.critical("testing from worker")
     lastCacheRefreshTime = datetime.utcnow()
     GetRequest("series")
     GetRadarrRequest("movie")
@@ -583,8 +632,8 @@ def worker(event):
                 for f in filePaths:
                     if not event.isSet():
 
-                        if parsed_args.verbose:
-                            logging.debug("worker thread checking in")
+                        # if parsed_args.verbose == True:
+                        #     logging.debug("worker thread checking in")
 
                         executor.submit(workerProcess, f)
 
@@ -602,14 +651,13 @@ def worker(event):
 def workerProcess(file: str):
     try:
 
-        shouldRun = IsAllowedToRunDetermination()
-        while not shouldRun:
+        should_run = IsAllowedToRunDetermination()
+        while not should_run:
             if parsed_args.verbose:
-                logging.debug("restrictions not met, sleeping for 300 seconds")
-            print('run criteria not met, waiting')
+                print('run criteria not met, waiting')
             time.sleep(150)
             # after the pause, check again to see if run restrictions are met
-            shouldRun = IsAllowedToRunDetermination()
+            should_run = IsAllowedToRunDetermination()
             pass
 
         p = ProcessFile(file)
@@ -617,7 +665,7 @@ def workerProcess(file: str):
             if p == '-':
                 pass
             elif p == 0:
-                print(" RETURN 0 \n\n")
+                # print(" RETURN 0 \n\n")
                 return 0
             elif p == 1:
                 print(" RETURN 1 \n\n")
@@ -628,7 +676,7 @@ def workerProcess(file: str):
     except Exception as ex:
         logging.error(ex)
         if parsed_args.verbose:
-            print(f"error while processing {file}")
+            print(f"error while processing {file} \n error is {ex}")
 
 
 def IsAllowedToRunDetermination():
@@ -636,18 +684,14 @@ def IsAllowedToRunDetermination():
         timeFactor = IsAllowedToRun_Time()
         if not timeFactor:
             print("waiting due to time restrictions")
-            if parsed_args.verbose:
-                logging.info("not running due to time restrictions")
             return False
         else:
             pass
     if parsed_args.plex:
         # dont run if IsPlexBusy is true
-        plexFactor = IsPlexBusy()
+        plexFactor = (GetPlexSessions() > 0)
         if plexFactor:
             print("skipping due to plex client activity")
-            if parsed_args.verbose:
-                logging.info("not running due to plex client activity")
             return False
         else:
             pass
@@ -693,6 +737,13 @@ def IsAllowedToRun_Time():
 
 if __name__ == "__main__":
     global startTime
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s %(threadName)s %(lineno)d %(message)s",
+        filename="sonarr_trans_log.log"
+    )
+    # logging.critical("initializing")
+
     P_Counter = 0
     P_Limit = 0
     startTime = datetime.utcnow()
@@ -704,23 +755,16 @@ if __name__ == "__main__":
     if parsed_args.limit is not None:
         if parsed_args.limit != 0:
             P_Limit = parsed_args.limit
-    try:
-        logging.basicConfig(
-            force=True,
-            level=logging.DEBUG,
-            format="%(asctime)s %(threadName)s %(lineno)d %(message)s",
-            filename="sonarr_trans_log.log"
-        )
-        logging.critical("initializing")
-        # except Exception as ex:
-        #     logging.basicConfig(
-        #         level=logging.debug,
-        #         format="%(asctime)s %(threadName)s %(lineno)d %(message)s"
+    # try:
+    #     # except Exception as ex:
+    #     #     logging.basicConfig(
+    #     #         level=logging.debug,
+    #     #         format="%(asctime)s %(threadName)s %(lineno)d %(message)s"
 
-        #     )
-    except Exception as ex:
-        print(ex)
-        logging.critical(ex)
+    #     #     )
+    # except Exception as ex:
+    #     print(ex)
+    #     logging.critical(ex)
     if parsed_args.verbose:
         print("verbose mode on")
         logging.debug("Initilizing with P_Count: {};; P_Limit: {}".format(P_Counter, P_Limit))
@@ -734,8 +778,6 @@ if __name__ == "__main__":
 
     while not event.isSet():
         try:
-            if parsed_args.verbose:
-                print("Checking in from main thread")
             elapsedTime = datetime.utcnow() - startTime
             if parsed_args.verbose:
                 print(f'elapsed time is {elapsedTime}')
@@ -743,7 +785,7 @@ if __name__ == "__main__":
             # stop after 1 day to prevent zombie processes
             if elapsedTime > timedelta(3):
                 break
-            event.wait(30)
+            event.wait(300)
         except KeyboardInterrupt:
             event.set()
             break

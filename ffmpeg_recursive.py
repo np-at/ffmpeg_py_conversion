@@ -202,12 +202,6 @@ def GetMasterFilePathList():
         if moviePaths is not None and len(moviePaths) > 0:
             filePaths.extend(moviePaths)
     for series in SeriesCache:
-        if P_Limit != 0:
-            if P_Counter >= P_Limit:
-                if parsed_args.verbose:
-                    logging.info("PCounter is >= P_Limit, skipping")
-                    logging.debug("P_Count is {};; P_Limit is {}".format(P_Counter, P_Limit))
-                return '-'
         i = series['id']
         seriesFilePaths = GetSeriesFilePaths(i)
         if seriesFilePaths is None or len(seriesFilePaths) < 1:
@@ -269,6 +263,9 @@ def ffmpegArgumentAssembly(sanitizedFileName: str, jsonFileMeta, containerType: 
     argList.append("-y")
     argList.append("-map 0")
     argList.append("-copy_unknown")
+    argList.append('-analyzeduration 800M')
+    argList.append('-probesize 800M')
+
 
     vArgs = ffmpegVideoConversionArgument(jsonFileMeta)
     if vArgs is not None:
@@ -323,19 +320,19 @@ def ffmpegAdaptiveThreadCountArgument() -> set:
                 return threadArgs
         elif 1 >= plexClients > 0:
             threadArgs.add(f'-threads {availThreads // 1.5}')
-            if parsed_args.verbose:
-                print(f'running with {(availThreads // 1.5)} threads')
+            # if parsed_args.verbose:
+            #     print(f'running with {(availThreads // 1.5)} threads')
             return threadArgs
         elif 2 >= plexClients > 1:
             threadArgs.add(f'-threads {availThreads // 2}')
-            if parsed_args.verbose:
-                print(f'running with {(availThreads // 2)} threads')
+            # if parsed_args.verbose:
+            #     print(f'running with {(availThreads // 2)} threads')
             return threadArgs
 
         elif plexClients > 2:
             threadArgs.add(f'-threads {availThreads // 3}')
-            if parsed_args.verbose:
-                print(f'running with {availThreads // 3} threads')
+            # if parsed_args.verbose:
+            #     print(f'running with {availThreads // 3} threads')
             return threadArgs
     else:
         if parsed_args.background is None or parsed_args.background == 0:
@@ -373,6 +370,7 @@ def ffmpegVideoConversionArgument(jsonFileMeta):
                             if s['tags']['mimetype'] is not None:
                                 if s['tags']['mimetype'] == 'image/jpeg':
                                     videoArgs.add(f"-map -0:{s['index']}")
+                    
                     except Exception as ex:
                         pass
                 else:
@@ -384,9 +382,8 @@ def ffmpegVideoConversionArgument(jsonFileMeta):
         else:
             videoArgs.add('-vsync 2')
             videoArgs.add('-r 24')
-            videoArgs.add('-max_muxing_queue_size 1000')
-            videoArgs.add('-analyzeduration 200M')
-            videoArgs.add('-probesize 200M')
+            videoArgs.add('-max_muxing_queue_size 9999')
+            videoArgs.add('-preset slow')
             return videoArgs
     except Exception as ex:
         logging.error(f"error processing video args: {ex}")
@@ -397,6 +394,7 @@ def ffmpegAudioConversionArgument(jsonFileMeta):
     try:
         audioArgs = set()
         streams = jsonFileMeta['streams']
+        
         for s in streams:
             if s['codec_type'] == 'audio':
                 # we want everything to be in 2 channel aac
@@ -404,13 +402,55 @@ def ffmpegAudioConversionArgument(jsonFileMeta):
                     audioArgs.add("-acodec aac")
                 if s['channels'] != 2:
                     audioArgs.add("-ac 2")
-                if len(audioArgs) == 0:
-                    return None
-                return audioArgs
             else:
                 pass
     except Exception as ex:
         logging.error(f"error processing audio args; error: {ex}")
+
+    otherargspresent: bool
+    if len(audioArgs) == 0:
+        otherargspresent = False
+    else:
+        otherargspresent = True
+    try:
+        # if there are multiple audio streams, and one has language= english, then set it as the default stream for playback
+        audiostreamlist =list(filter(lambda x: x['codec_type'] == 'audio' and x['tags']['language'] is not None, streams))
+        if len(audiostreamlist) > 1:
+            engStreams = list(filter(lambda x: x['tags']['language'] == 'eng', audiostreamlist))
+            if len(engStreams) > 1:
+                #look for "commentary in the list of english streams to weed out commentary tracks"
+                for s in engStreams:
+                    trackTitle = s['tags']['title']
+                    if trackTitle is not None:
+                        commentary = re.search("commentary", str(trackTitle), re.RegexFlag.IGNORECASE)
+                        if commentary is not None:
+                            engStreams.remove(s)
+
+            if len(engStreams) == 1:
+                #remove the default designation from all audio streams except our chosen one
+                removeDefaultList = list(filter(lambda x: x['disposition']['default'] == 1, audiostreamlist))
+                try:
+                    removeDefaultList.remove(engStreams[0])
+                except ValueError:
+                    pass
+                if len(removeDefaultList) >= 1:
+                    for r in removeDefaultList:
+                        audioArgs.add(f"-disposition:a:{r['index']} 0")
+                if engStreams[0]['disposition']['default'] == 0:
+                    audioArgs.add(f"-disposition:a:{engStreams[0]['index']} default")
+    except Exception as ex:
+        logging.error(ex)
+    
+    if len(audioArgs) == 0:
+        return None
+
+    if otherargspresent is False:
+        audioArgs.add("-acodec copy")
+
+    return audioArgs
+
+        
+
 
 
 def ffmpegSubtitleConversionArgument(jsonFileMeta, containerType: str):
@@ -442,11 +482,6 @@ def ffmpegSubtitleConversionArgument(jsonFileMeta, containerType: str):
         print(ex)
         logging.error(f'error: {ex}')
 
-
-# else:
-#     return set()
-
-
 def SaniString(sInput: str):
     # splitString = sInput.split()
     # outputString: str
@@ -470,19 +505,8 @@ def convertVideoFile(file):
     global P_Counter
 
     sanitizedString = SaniString(file)
-    tempFileName = sanitizedString + ".converting.mp4"
-    # if parsed_args.verbose:
-    #     logging.debug('temp file name is {} ;; sanitized file name is {}'.format(tempFileName, sanitizedString))
     try:
-        # logging.info("conversion of {} beginning".format(file))
-        # print("ffmpeg -y -i " + sanitizedString+ " -vcodec copy -ac 2 -acodec aac " + tempFileName)
         convArgs: str
-        # if  re.search(".mkv$", file):
-        #     convArgs = "ffmpeg -y -i " + sanitizedString+ " -ac 2 -acodec aac " + tempFileName
-        # elif re.search(".avi$", file):
-        #     convArgs = "ffmpeg -y -i " + sanitizedString+ " -ac 2 -acodec aac " + tempFileName
-        # else:
-        #     convArgs = "ffmpeg -y -i " + sanitizedString+ " -vcodec copy -ac 2 -acodec aac " + tempFileName
         jsonFileMeta = ProbeVideoFile(file)
         if jsonFileMeta == 1 or jsonFileMeta == 0:
             return 1
@@ -511,14 +535,15 @@ def convertVideoFile(file):
         (output, err) = convProcess.communicate()
         print(output)
         print(err)
+        logging.error(err)
         p_status = convProcess.wait()
         if convProcess.returncode == 0:
             logging.info("success converting {}".format(file))
             P_Counter = P_Counter + 1
 
         elif convProcess.returncode == 1:
-            logging.error("error converting")
-            logging.error(err)
+            print(f"error converting {file}")
+            logging.error(f"error converting {file}")
             P_Counter = P_Counter + 1
             raise ChildProcessError
         else:
@@ -527,7 +552,8 @@ def convertVideoFile(file):
             raise EnvironmentError
 
     except Exception as ex:
-        logging.error(ex)
+        print(ex)
+        logging.critical(ex)
         return 1
     else:
         try:
@@ -541,26 +567,30 @@ def convertVideoFile(file):
 
                 shutil.move(tempFileName_unsanitized, newFileName)
                 if parsed_args.verbose:
+                    print(f'moved {tempFileName_unsanitized} over {newFileName}')
                     logging.debug(f'moved {tempFileName_unsanitized} over {newFileName}')
             elif re.search(".avi$", file):
                 newFileName = file.strip(".avi")
                 newFileName += ".mp4"
                 shutil.move(tempFileName_unsanitized, newFileName)
                 if parsed_args.verbose:
+                    print(f'moved {tempFileName_unsanitized} over {newFileName}')
                     logging.debug(f'moved {tempFileName_unsanitized} over {newFileName}')
             else:
                 shutil.move(tempFileName_unsanitized, file)
                 if parsed_args.verbose:
+                    print(f'moved {tempFileName_unsanitized} over {file}')
                     logging.debug(f'moved {tempFileName_unsanitized} over {file}')
                 return 0
         except Exception as ex:
-            logging.error(f"error during post processing; internal error: {ex}")
+            logging.critical(f"error during post processing; internal error: {ex}")
             print(f"error during post-processing; error: {ex}")
             return 1
         else:
             if file != newFileName:
                 os.remove(file)  # THIS WILL REMOVE THE NEW ONE IF NEWFILE NAME AND OLDFILE NAME ARE THE SAME!!!!
                 if parsed_args.verbose:
+                    print(f'deleting original file: {file}')
                     logging.debug(f'deleting original file: {file}')
 
             logging.debug("completed processing of {}".format(file))
@@ -614,6 +644,18 @@ def RefreshCache(duration_Seconds: int):
     else:
         return
 
+def NotifyEndpoints():
+    #notify sonarr to rescan
+    Body = {"name": "RefreshSeries"}
+    sonarrJsonBody = json.dumps(Body)
+    r = requests.post(SONARR_URL + "command" + SONARR_APIKEY_PARAM, sonarrJsonBody)
+    #notify radarr to rescan
+    radarrBody = {"name": "RescanMovie"}
+    radarrJsonBody = json.dumps(radarrBody)
+    r = requests.post(RADARR_URL + "command" + RADARR_APIKEY_PARAM, radarrJsonBody)
+    #TODO notify plex to refresh library
+    
+
 
 def worker(event):
     global P_Counter
@@ -627,7 +669,10 @@ def worker(event):
         try:
             RefreshCache(3600)
             filePaths = GetMasterFilePathList()
-            with concurrent.futures.thread.ThreadPoolExecutor(max_workers=parsed_args.worker) as executor:
+
+            wcount = max(parsed_args.worker,1)
+
+            with concurrent.futures.thread.ThreadPoolExecutor(max_workers=wcount) as executor:
 
                 for f in filePaths:
                     if not event.isSet():
@@ -642,8 +687,9 @@ def worker(event):
                                 event.set()
                     else:
                         break
-                if parsed_args.daemon is True:
-                    event.set()
+                NotifyEndpoints()
+                event.set()
+
         except Exception as ex:
             logging.error(ex)
 
@@ -773,7 +819,7 @@ if __name__ == "__main__":
     thread = threading.Thread(target=worker, args=(event,))
     # thread_two = threading.Thread(target=worker, args=(event,))
     thread.start()
-
+   
     # thread_two.start()
 
     while not event.isSet():

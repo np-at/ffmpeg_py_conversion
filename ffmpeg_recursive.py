@@ -85,6 +85,50 @@ def create_arg_parser():
 
     return parser
 
+def create_arg_parser():
+    """"Creates and returns the ArgumentParser object."""
+
+    parser = argparse.ArgumentParser(description='Description of your app.')
+    parser.add_argument('--background', '-b',
+                        help="run with 1 thread to allow other processes to work in parallel \
+                          will run with 1 thread per flag present",
+
+                        action='count')
+    parser.add_argument('--daemon', '-d',
+                        help='run as ongoing process, consider using with -O and/or -p',
+                        action='store_true')
+    parser.add_argument('--plex', '-p',
+                        help="check and wait for there to be 0 plex clients before starting a transcode",
+
+                        action='store_true')
+    parser.add_argument('--worker', '-w',
+                        help='the number of duplicate worker processes spawned',
+                        default=1,
+                        action='count')
+    parser.add_argument('--limit',
+                        '-l',
+                        help='limit this to processing X items',
+                        type=int,
+                        default=0)
+    parser.add_argument('--verbose',
+                        '-v',
+                        help="increase verbosity",
+                        action='store_true')
+    parser.add_argument('--offpeak',
+                        '-O',
+                        help="start worker threads that will only run during off peak hours",
+                        action='store_true')
+    parser.add_argument('--ignore_movies', '-m',
+                        help='skip fetching movie paths for transcoding',
+                        action='store_true')
+    parser.add_argument('--adaptive', '-a',
+                        help='try to scale number of threads based on active plex sessions',
+                        action='store_true')
+    # parser.add_argument('--outputDirectory',
+    # help='Path to the output that contains the resumes.')
+
+    return parser
+
 
 def GetRequest(apiType, queryParam=None):
     global SeriesCache
@@ -171,10 +215,10 @@ def ProbeVideoFile(filePath):
             logging.debug(f'{filePath} does not exist')
         return 0
     try:
-        fileMeta = ffmpeg.probe(filePath)
+        fileMeta = ffmpeg.probe(filePath, analyzeduration='200M', probesize='200M')
     except Exception as ex:
         logging.error(ex)
-        logging.error(ffmpeg.Error)
+        print(ex)
         return 1
     else:
         return fileMeta
@@ -435,9 +479,9 @@ def ffmpegAudioConversionArgument(jsonFileMeta):
                     pass
                 if len(removeDefaultList) >= 1:
                     for r in removeDefaultList:
-                        audioArgs.add(f"-disposition:a:{r['index']} 0")
+                        audioArgs.add(f"-disposition:{r['index']} 0")
                 if engStreams[0]['disposition']['default'] == 0:
-                    audioArgs.add(f"-disposition:a:{engStreams[0]['index']} default")
+                    audioArgs.add(f"-disposition:{engStreams[0]['index']} default")
     except Exception as ex:
         logging.error(ex)
     
@@ -501,7 +545,7 @@ def SaniString(sInput: str):
     return sInput
 
 
-def convertVideoFile(file):
+def  convertVideoFile(file):
     global P_Counter
 
     sanitizedString = SaniString(file)
@@ -544,6 +588,12 @@ def convertVideoFile(file):
         elif convProcess.returncode == 1:
             print(f"error converting {file}")
             logging.error(f"error converting {file}")
+            try:
+                os.remove.file(sanitizedString + '.converting' + containerType)
+                if parsed_args.verbose:
+                    print(f'cleaning up incomplete conversion file')
+            except Exception:
+                pass
             P_Counter = P_Counter + 1
             raise ChildProcessError
         else:

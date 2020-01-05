@@ -1,6 +1,9 @@
 #!/bin/python3
 
 import os
+from json import JSONDecodeError
+from typing import Dict, Any
+
 import ffmpeg
 import requests
 import json
@@ -19,6 +22,8 @@ import concurrent.futures
 import concurrent.futures.thread
 import time
 
+
+"""  """
 global SONARR_URL
 SONARR_URL = "http://[SONARR URL/IP ADDRESS ]:8989/api/"  # sonarr
 global SONARR_APIKEY_PARAM
@@ -40,6 +45,9 @@ P_Limit = 0
 PLEX_URL = 'http://[PLEX URL/IP HERE]:32400'
 PLEX_TOKEN = '[PLEX TOKEN HERE]'
 
+g_vars: Dict[Any, str] = dict(SONARR_URL=SONARR_URL, SONARR_API_KEY=SONARR_APIKEY_PARAM, RADARR_URL=RADARR_URL,
+                              RADARR_API_KEY=RADARR_APIKEY_PARAM, PLEX_URL=PLEX_URL, PLEX_TOKEN=PLEX_TOKEN)
+
 
 def create_arg_parser():
     """"Creates and returns the ArgumentParser object."""
@@ -85,85 +93,45 @@ def create_arg_parser():
 
     return parser
 
-def create_arg_parser():
-    """"Creates and returns the ArgumentParser object."""
 
-    parser = argparse.ArgumentParser(description='Description of your app.')
-    parser.add_argument('--background', '-b',
-                        help="run with 1 thread to allow other processes to work in parallel \
-                          will run with 1 thread per flag present",
-
-                        action='count')
-    parser.add_argument('--daemon', '-d',
-                        help='run as ongoing process, consider using with -O and/or -p',
-                        action='store_true')
-    parser.add_argument('--plex', '-p',
-                        help="check and wait for there to be 0 plex clients before starting a transcode",
-
-                        action='store_true')
-    parser.add_argument('--worker', '-w',
-                        help='the number of duplicate worker processes spawned',
-                        default=1,
-                        action='count')
-    parser.add_argument('--limit',
-                        '-l',
-                        help='limit this to processing X items',
-                        type=int,
-                        default=0)
-    parser.add_argument('--verbose',
-                        '-v',
-                        help="increase verbosity",
-                        action='store_true')
-    parser.add_argument('--offpeak',
-                        '-O',
-                        help="start worker threads that will only run during off peak hours",
-                        action='store_true')
-    parser.add_argument('--ignore_movies', '-m',
-                        help='skip fetching movie paths for transcoding',
-                        action='store_true')
-    parser.add_argument('--adaptive', '-a',
-                        help='try to scale number of threads based on active plex sessions',
-                        action='store_true')
-    # parser.add_argument('--outputDirectory',
-    # help='Path to the output that contains the resumes.')
-
-    return parser
-
-
-def GetRequest(apiType, queryParam=None):
+def sonarr_get(apiType, queryParam=None):
     global SeriesCache
-    global SONARR_APIKEY_PARAM
-    global SONARR_URL
     queryString = ""
     if queryParam is not None:
         for q in queryParam:
             queryString += "&{}={}".format(q, queryParam[q])
 
-    r = requests.get(SONARR_URL + apiType + SONARR_APIKEY_PARAM + queryString)
-
+    r = requests.get(g_vars['SONARR_URL'] + apiType + '?apikey=' + g_vars['SONARR_API_KEY'] + queryString)
+    if r.status_code == 401:
+        logging.critical(f'Recieved \'Unauthorized\' response from Sonarr.  Verify Credentials are accurate and try '
+                         f'again')
+        raise ConnectionRefusedError(r)
     jds = json.loads(r.content)
     SeriesCache = jds
     return jds
 
 
-def GetRadarrRequest(apiType, queryParam=None):
+def radarr_get(apiType, queryParam=None):
     global RadarrCache
-    global RADARR_URL
-    global RADARR_APIKEY_PARAM
     queryString = ""
     if queryParam is not None:
         for q in queryParam:
             queryString += "&{}={}".format(q, queryParam[q])
 
-    r = requests.get(RADARR_URL + apiType + RADARR_APIKEY_PARAM + queryString)
-
+    r = requests.get(g_vars['RADARR_URL'] + apiType + '?apikey=' + g_vars['RADARR_API_KEY'] + queryString)
+    if r.status_code == 401:
+        logging.critical(f'Recieved \'Unauthorized\' response from Radarr.  Verify Credentials are accurate and try '
+                         f'again')
+        print(f'Recieved \'Unauthorized\' response from Radarr.  Verify Credentials are accurate and try '
+                         f'again')
+        raise ConnectionRefusedError(r)
     jds = json.loads(r.content)
     RadarrCache = jds
     return jds
 
 
 def GetRadarrMoviePaths():
-    GetRadarrRequest('movie')
+    radarr_get('movie')
     Pathlist = list()
     for movie in RadarrCache:
         if movie['hasFile']:
@@ -182,15 +150,20 @@ def NotifySonarrOfSeriesUpdate(seriesId: int = None):
 
     jsonbody = json.dumps(body)
     print("commanding sonarr to rescan")
-    r = requests.post(SONARR_URL + "command" + SONARR_APIKEY_PARAM, jsonbody)
+    r = requests.post(g_vars['SONARR_URL'] + "command" + '?apikey=' + g_vars['SONARR_API_KEY'], jsonbody)
     print("response: {}".format(r.text))
 
 
 def GetPlexSessions() -> int:
     from plexapi.server import PlexServer
-    plex = PlexServer(PLEX_URL, PLEX_TOKEN)
-    plexSessions = plex.sessions()
-    return len(plexSessions)
+    try:
+        plex = PlexServer(g_vars['PLEX_URL'], g_vars['PLEX_TOKEN'])
+        plexSessions = plex.sessions()
+        return len(plexSessions)
+    except Exception as ex:
+        logging.critical(ex)
+        print(ex)
+        raise ConnectionError()
 
 
 def GetSeriesTitles(jsonInput) -> dict:
@@ -205,7 +178,7 @@ def GetSeriesTitles(jsonInput) -> dict:
 
 def GetSeriesEpisodeList(seriesId):
     qp = {'seriesId': '{}'.format(seriesId)}
-    req = GetRequest("episode", qp)
+    req = sonarr_get("episode", qp)
     return req
 
 
@@ -275,7 +248,7 @@ def ProcessFile(filePath):
     if meta == 1 or meta == 0:
         return None
     # if container is not mp4 then we need to convert anyway
-    if re.search(".mp4$", filePath) == None:
+    if re.search(".mp4$", filePath) is None:
         PROCESS_THIS = True
 
     if PROCESS_THIS == False and meta is not None:
@@ -293,7 +266,8 @@ def ProcessFile(filePath):
     if PROCESS_THIS:
         if parsed_args.verbose:
             logging.info(
-                "{} is candidate for processing (P_Count is {}, P_Limit is {})".format(filePath, P_Counter, P_Limit))
+                "{} is candidate for processing (P_Count is {}, P_Limit is {})".format(filePath, P_Counter,
+                                                                                       P_Limit))
         returnCode = convertVideoFile(filePath)
         if returnCode == 0:
             return 0
@@ -309,7 +283,6 @@ def ffmpegArgumentAssembly(sanitizedFileName: str, jsonFileMeta, containerType: 
     argList.append("-copy_unknown")
     argList.append('-analyzeduration 800M')
     argList.append('-probesize 800M')
-
 
     vArgs = ffmpegVideoConversionArgument(jsonFileMeta)
     if vArgs is not None:
@@ -333,7 +306,8 @@ def ffmpegArgumentAssembly(sanitizedFileName: str, jsonFileMeta, containerType: 
     # argList.append("-map_metadata 0")
     # add input file
     # if parsed_args.verbose == True:
-    #     logging.debug(f"vArgs is {vArgs}; aArgs is {aArgs}; file ends with .mp4 bools is {sanitizedFileName.endswith('.mp4')}")
+    #     logging.debug(f"vArgs is {vArgs}; aArgs is {aArgs}; file ends with .mp4 bools is
+    #     {sanitizedFileName.endswith('.mp4')}")
     if vArgs is None and aArgs is None and re.search(".mp4$|.mkv$", sanitizedFileName) is not None:
         # if all three conditions are met, then we don't need to convert
         return 2
@@ -396,8 +370,8 @@ def ffmpegVideoConversionArgument(jsonFileMeta):
             try:
                 if s['codec_type'] == 'video':
                     # currently only care about it being h264
-                    # TODO: add resolution and fps 
-                    
+                    # TODO: add resolution and fps
+
                     if s['codec_name'] != 'h264':
                         videoArgs.add('-vcodec h264')
                     fps: float
@@ -414,7 +388,7 @@ def ffmpegVideoConversionArgument(jsonFileMeta):
                             if s['tags']['mimetype'] is not None:
                                 if s['tags']['mimetype'] == 'image/jpeg':
                                     videoArgs.add(f"-map -0:{s['index']}")
-                    
+
                     except Exception as ex:
                         pass
                 else:
@@ -438,7 +412,7 @@ def ffmpegAudioConversionArgument(jsonFileMeta):
     try:
         audioArgs = set()
         streams = jsonFileMeta['streams']
-        
+
         for s in streams:
             if s['codec_type'] == 'audio':
                 # we want everything to be in 2 channel aac
@@ -458,11 +432,12 @@ def ffmpegAudioConversionArgument(jsonFileMeta):
         otherargspresent = True
     try:
         # if there are multiple audio streams, and one has language= english, then set it as the default stream for playback
-        audiostreamlist =list(filter(lambda x: x['codec_type'] == 'audio' and x['tags']['language'] is not None, streams))
+        audiostreamlist = list(
+            filter(lambda x: x['codec_type'] == 'audio' and x['tags']['language'] is not None, streams))
         if len(audiostreamlist) > 1:
             engStreams = list(filter(lambda x: x['tags']['language'] == 'eng', audiostreamlist))
             if len(engStreams) > 1:
-                #look for "commentary in the list of english streams to weed out commentary tracks"
+                # look for "commentary in the list of english streams to weed out commentary tracks"
                 for s in engStreams:
                     trackTitle = s['tags']['title']
                     if trackTitle is not None:
@@ -471,7 +446,7 @@ def ffmpegAudioConversionArgument(jsonFileMeta):
                             engStreams.remove(s)
 
             if len(engStreams) == 1:
-                #remove the default designation from all audio streams except our chosen one
+                # remove the default designation from all audio streams except our chosen one
                 removeDefaultList = list(filter(lambda x: x['disposition']['default'] == 1, audiostreamlist))
                 try:
                     removeDefaultList.remove(engStreams[0])
@@ -484,7 +459,7 @@ def ffmpegAudioConversionArgument(jsonFileMeta):
                     audioArgs.add(f"-disposition:{engStreams[0]['index']} default")
     except Exception as ex:
         logging.error(ex)
-    
+
     if len(audioArgs) == 0:
         return None
 
@@ -492,9 +467,6 @@ def ffmpegAudioConversionArgument(jsonFileMeta):
         audioArgs.add("-acodec copy")
 
     return audioArgs
-
-        
-
 
 
 def ffmpegSubtitleConversionArgument(jsonFileMeta, containerType: str):
@@ -526,6 +498,7 @@ def ffmpegSubtitleConversionArgument(jsonFileMeta, containerType: str):
         print(ex)
         logging.error(f'error: {ex}')
 
+
 def SaniString(sInput: str):
     # splitString = sInput.split()
     # outputString: str
@@ -545,7 +518,7 @@ def SaniString(sInput: str):
     return sInput
 
 
-def  convertVideoFile(file):
+def convertVideoFile(file):
     global P_Counter
 
     sanitizedString = SaniString(file)
@@ -687,24 +660,24 @@ def RefreshCache(duration_Seconds: int):
     cacheLifetime: timedelta
     cacheLifetime = datetime.utcnow() - lastCacheRefreshTime
     if cacheLifetime > timedelta(0, duration_Seconds, 0):
-        GetRequest("series")
-        GetRadarrRequest("movie")
+        sonarr_get("series")
+        radarr_get("movie")
         lastCacheRefreshTime = datetime.utcnow()
         return
     else:
         return
 
+
 def NotifyEndpoints():
-    #notify sonarr to rescan
+    # notify sonarr to rescan
     Body = {"name": "RefreshSeries"}
     sonarrJsonBody = json.dumps(Body)
-    r = requests.post(SONARR_URL + "command" + SONARR_APIKEY_PARAM, sonarrJsonBody)
-    #notify radarr to rescan
+    r = requests.post(g_vars['SONARR_URL'] + "command" + '?apikey=' + g_vars['SONARR_API_KEY'], sonarrJsonBody)
+    # notify radarr to rescan
     radarrBody = {"name": "RescanMovie"}
     radarrJsonBody = json.dumps(radarrBody)
-    r = requests.post(RADARR_URL + "command" + RADARR_APIKEY_PARAM, radarrJsonBody)
-    #TODO notify plex to refresh library
-    
+    r = requests.post(g_vars['RADARR_URL'] + "command" + '?apikey=' +  g_vars['RADARR_API_KEY'], radarrJsonBody)
+    # TODO notify plex to refresh library
 
 
 def worker(event):
@@ -713,14 +686,14 @@ def worker(event):
     global lastCacheRefreshTime
     logging.critical("testing from worker")
     lastCacheRefreshTime = datetime.utcnow()
-    GetRequest("series")
-    GetRadarrRequest("movie")
+    sonarr_get("series")
+    radarr_get("movie")
     while not event.isSet():
         try:
             RefreshCache(3600)
             filePaths = GetMasterFilePathList()
 
-            wcount = max(parsed_args.worker,1)
+            wcount = max(parsed_args.worker, 1)
 
             with concurrent.futures.thread.ThreadPoolExecutor(max_workers=wcount) as executor:
 
@@ -831,6 +804,29 @@ def IsAllowedToRun_Time():
         return True
 
 
+def try_load_config_file():
+    env_file = os.path.join(os.path.curdir, '.env')
+    data = dict()
+    if os.path.exists(env_file):
+        try:
+            with open(env_file) as f:
+                data = json.load(f)
+
+        except JSONDecodeError as ex:
+            logging.critical(f'unable to decode {env_file}', ex)
+        except Exception as exx:
+            logging.critical(f'error reading {env_file}', exx)
+        else:
+            for key in g_vars:
+                try:
+                    if data[key] is not None:
+                        g_vars[key] = data[key]
+                except:
+                    # ignore error
+                    pass
+            return
+
+
 if __name__ == "__main__":
     global startTime
     logging.basicConfig(
@@ -848,6 +844,8 @@ if __name__ == "__main__":
     parsed_args = arg_parser.parse_args(sys.argv[1:])
     logging.debug(parsed_args)
 
+    # load secrets from .env file:
+    try_load_config_file()
     if parsed_args.limit is not None:
         if parsed_args.limit != 0:
             P_Limit = parsed_args.limit
@@ -869,7 +867,7 @@ if __name__ == "__main__":
     thread = threading.Thread(target=worker, args=(event,))
     # thread_two = threading.Thread(target=worker, args=(event,))
     thread.start()
-   
+
     # thread_two.start()
 
     while not event.isSet():

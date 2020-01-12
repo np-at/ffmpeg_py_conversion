@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import socketserver
 import subprocess
 import sys
 import threading
@@ -20,6 +21,7 @@ from typing import Dict, Any
 import ffmpeg
 import pytz
 import requests
+import socketserver
 
 """  """
 global SONARR_URL
@@ -46,6 +48,24 @@ PLEX_TOKEN = '[PLEX TOKEN HERE]'
 g_vars: Dict[Any, str] = dict(SONARR_URL=SONARR_URL, SONARR_API_KEY=SONARR_APIKEY_PARAM, RADARR_URL=RADARR_URL,
                               RADARR_API_KEY=RADARR_APIKEY_PARAM, PLEX_URL=PLEX_URL, PLEX_TOKEN=PLEX_TOKEN)
 
+#
+# class RHandler(socketserver.BaseRequestHandler):
+#     def handle(self):
+#         # self.request is the TCP socket connected to the client
+#
+#         self.data = self.request.recv(1024).strip()
+#         print("{} wrote:".format(self.client_address[0]))
+#         print(self.data)
+#         # just send back the same data, but upper-cased
+#         self.request.sendall(self.data.upper())
+#
+#
+# t_server = socketserver.TCPServer(('127.0.0.1', 6543), RHandler)
+
+
+def set_up_listener():
+
+    t_server.serve_forever()
 
 
 def create_arg_parser():
@@ -77,10 +97,10 @@ def create_arg_parser():
                         '-v',
                         help="increase verbosity",
                         action='store_true')
-    # parser.add_argument('--input_file', '-i',
-    #                     type=Path,
-    #                     help='path to input file (to process a single file) or directory (to process all files in a '
-    #                          'dir)')
+    parser.add_argument('--input_file', '-i',
+                        type=Path,
+                        help='path to input file (to process a single file) or directory (to process all files in a '
+                             'dir)')
     parser.add_argument('--offpeak',
                         '-O',
                         help="start worker threads that will only run during off peak hours",
@@ -831,8 +851,12 @@ def try_load_config_file():
             return
 
 
-def main(opt_args=None):
+def main(op_args=None):
     global startTime
+    global parsed_args
+
+    if op_args is not None:
+        parsed_args = create_arg_parser().parse_args(['--verbose'])
     logging.basicConfig(
         level=logging.WARNING,
         format="%(asctime)s %(threadName)s %(lineno)d %(message)s",
@@ -844,11 +868,6 @@ def main(opt_args=None):
     P_Limit = 0
     startTime = datetime.utcnow()
 
-    arg_parser = create_arg_parser()
-    if opt_args is not None:
-        parsed_args = arg_parser.parse_args(sys.argv[1:])
-    else:
-        parsed_args = arg_parser.parse_args(opt_args)
     logging.debug(parsed_args)
 
     # load secrets from .env file:
@@ -856,6 +875,7 @@ def main(opt_args=None):
     if parsed_args.limit is not None:
         if parsed_args.limit != 0:
             P_Limit = parsed_args.limit
+
     # try:
     #     # except Exception as ex:
     #     #     logging.basicConfig(
@@ -870,38 +890,42 @@ def main(opt_args=None):
         print("verbose mode on")
         logging.debug("Initilizing with P_Count: {};; P_Limit: {}".format(P_Counter, P_Limit))
 
-    if parsed_args.input_file is not None and Path(parsed_args.input_file).exists():
-        worker_process(str(Path(parsed_args.input_file).absolute()))
+    if op_args is not None and os.path.exists(op_args):
+        worker_process(str(Path(Path(op_args)).absolute()))
         exit()
+    if op_args is not None:
+        pass
+    else:
 
-    event = threading.Event()
-    thread = threading.Thread(target=worker, args=(event,))
-    # thread_two = threading.Thread(target=worker, args=(event,))
-    thread.start()
+        event = threading.Event()
+        thread = threading.Thread(target=worker, args=(event,))
+        # thread_two = threading.Thread(target=worker, args=(event,))
+        thread.start()
 
-    # thread_two.start()
+        # thread_two.start()
 
-    while not event.isSet():
-        try:
-            elapsedTime = datetime.utcnow() - startTime
-            if parsed_args.verbose:
-                print(f'elapsed time is {elapsedTime}')
+        while not event.isSet():
+            try:
+                elapsedTime = datetime.utcnow() - startTime
+                if parsed_args.verbose:
+                    print(f'elapsed time is {elapsedTime}')
 
-            # stop after 1 day to prevent zombie processes
-            if elapsedTime > timedelta(3):
+                # stop after 1 day to prevent zombie processes
+                if elapsedTime > timedelta(3):
+                    break
+                event.wait(300)
+            except KeyboardInterrupt:
+                event.set()
                 break
-            event.wait(300)
-        except KeyboardInterrupt:
-            event.set()
-            break
 
-    # if parsed_args.notify == True:
-    #     notify_sonarr_of_series_update()
-    # else:
-    #     main()
-    # pass
+        # if parsed_args.notify == True:
+        #     notify_sonarr_of_series_update()
+        # else:
+        #     main()
+        # pass
 
 
 if __name__ == "__main__":
+    arg_parser = create_arg_parser()
+    parsed_args = arg_parser.parse_args(sys.argv[1:])
     main()
-

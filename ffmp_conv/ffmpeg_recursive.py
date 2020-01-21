@@ -291,9 +291,9 @@ def process_file(file_path):
             logging.info(
                 "{} is candidate for processing (P_Count is {}, P_Limit is {})".format(file_path, P_Counter,
                                                                                        P_Limit))
-        return_code = convert_video_file(file_path)
+        (return_code, file_name) = convert_video_file(file_path)
         if return_code == 0:
-            return 0
+            return 0, file_name
     else:
         # if not a candidate, return none
         return None
@@ -628,7 +628,7 @@ def convert_video_file(file):
                 if parsed_args.verbose:
                     print(f'moved {temp_file_name_unsanitized} over {file}')
                     logging.debug(f'moved {temp_file_name_unsanitized} over {file}')
-                return 0
+                return 0, temp_file_name_unsanitized
         except Exception as ex:
             logging.critical(f"error during post processing; internal error: {ex}")
             print(f"error during post-processing; error: {ex}")
@@ -641,7 +641,7 @@ def convert_video_file(file):
                     logging.debug(f'deleting original file: {file}')
 
             logging.debug("completed processing of {}".format(file))
-            return 0
+            return 0, new_file_name
 
 
 def find_episode_file_id_from_file_path(file_path: str):
@@ -753,13 +753,13 @@ def worker_process(file: str):
             should_run = is_allowed_to_run_determination()
             pass
 
-        p = process_file(file)
+        (p, f) = process_file(file)
         if p is not None:
             if p == '-':
                 pass
             elif p == 0:
                 # print(" RETURN 0 \n\n")
-                return 0
+                return 0, f
             elif p == 1:
                 print(" RETURN 1 \n\n")
                 raise ChildProcessError
@@ -851,17 +851,23 @@ def try_load_config_file():
             return
 
 
-def main(op_args=None):
+def main(op_args=None, *args):
     global startTime
     global parsed_args
 
     if op_args is not None:
-        parsed_args = create_arg_parser().parse_args(['--verbose'])
-    logging.basicConfig(
-        level=logging.WARNING,
-        format="%(asctime)s %(threadName)s %(lineno)d %(message)s",
-        filename="sonarr_trans_log.log"
-    )
+        parsed_args = create_arg_parser().parse_args(['--verbose'].extend(args))
+        logging.basicConfig(
+            level=logging.WARNING,
+            format="%(asctime)s %(threadName)s %(lineno)d %(message)s"
+
+        )
+    else:
+        logging.basicConfig(
+            level=logging.WARNING,
+            format="%(asctime)s %(threadName)s %(lineno)d %(message)s",
+            filename="../sonarr_trans_log.log"
+        )
     # logging.critical("initializing")
 
     P_Counter = 0
@@ -891,10 +897,10 @@ def main(op_args=None):
         logging.debug("Initilizing with P_Count: {};; P_Limit: {}".format(P_Counter, P_Limit))
 
     if op_args is not None and os.path.exists(op_args):
-        worker_process(str(Path(Path(op_args)).absolute()))
-        exit()
-    if op_args is not None:
-        pass
+        (r_code, new_name) = worker_process(str(Path(Path(op_args)).absolute()))
+        return 0, new_name
+    elif op_args is not None:
+        return 1
     else:
 
         event = threading.Event()

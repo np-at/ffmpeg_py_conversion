@@ -175,7 +175,6 @@ text += '\nStatus: %s' % status
 #     text += '\nUnpack time: ' + format_time_sec(int(nzbGroup['UnpackTimeSec']))
 
 # add list of downloaded files
-files = False
 if os.environ.get('NZBPO_PLEX_URL') and os.environ.get('NZBPO_PLEX_TOKEN'):
     conv = ffmp.Converter(PLEX_URL=os.environ['NZBPO_PLEX_URL'], PLEX_TOKEN=os.environ['NZBPO_PLEX_TOKEN'])
 else:
@@ -187,9 +186,8 @@ if not test_mode:
         for filename in filenames:
             # text += '\n' + os.path.join(dirname, filename)[len(os.environ['NZBPP_DIRECTORY']) + 1:]
 
-            files = True
             try:
-                return_code, new_file_name = conv.process_file(os.path.join(dirname, filename))
+                return_code, new_file_name = conv.try_process_file(os.path.join(dirname, filename))
                 if return_code == 3 or return_code == 2 or return_code == 0:
                     pass
                 else:

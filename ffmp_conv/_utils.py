@@ -19,13 +19,12 @@ class ArgAssembler:
         else:
             self.plex = None
 
-    def argument_assembly(self, file_name: str, json_file_meta: json) -> str:
+    def argument_assembly(self, file_name: str, json_file_meta: json) -> (str, str, int):
         """
 
         @param file_name:
         @param json_file_meta:
-        @param container_type:
-        @return:
+        @return string with joined arguments, new file name, status code (0=OK, 1=Exception, 3= Do not need to convert)
         """
         san_file_name = self.sani_string(str(file_name))
         mp4 = re.compile(".mp4$|.mkv$")
@@ -71,7 +70,7 @@ class ArgAssembler:
         #     {sanitizedFileName.endswith('.mp4')}")
         if v_args is None and a_args is None and mm.search(san_file_name) is not None:
             # if all three conditions are met, then we don't need to convert
-            return 2, None
+            return None, None, 3
         separator = " "
         temp_file_name = str()
         if mm.search(san_file_name) is not None:

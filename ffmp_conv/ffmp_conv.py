@@ -1,12 +1,12 @@
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from typing import Dict, Any
-import shlex
 
-import ffmpeg
+from ffmpeg._probe import probe
 
 from ._utils import ArgAssembler
 
@@ -54,7 +54,7 @@ class Converter(object):
                 if str(Key).lower() == str(k).lower():
                     self.g_vars[Key] = v
 
-    def process_file(self, file_str) -> (int, str):
+    def try_process_file(self, file_str) -> (int, str):
         """
 
         @param file_str:
@@ -71,7 +71,7 @@ class Converter(object):
         else:
             file_meta = str()
             try:
-                file_meta = ffmpeg.probe(file, analyzeduration='800M', probesize='800M')
+                file_meta = probe(file, analyzeduration='800M', probesize='800M')
                 has_video_stream = False
                 for stream in file_meta['streams']:
                     if stream['codec_type'] == 'video':
@@ -81,8 +81,9 @@ class Converter(object):
             except Exception as ex:
                 return 3, None
             try:
-                com_args, temp_file_name = self.arg.argument_assembly(json_file_meta=file_meta, file_name=file)
-                if com_args is None or com_args == 2:
+                com_args, temp_file_name, status_code = self.arg.argument_assembly(json_file_meta=file_meta,
+                                                                                   file_name=file)
+                if status_code == 3 or status_code == 1:
                     return 0, file
                 else:
                     try:
@@ -90,9 +91,16 @@ class Converter(object):
                                                               shell=False)
                         status = conversion_process.wait()
                         if conversion_process.returncode != 0:
-                            os.remove.file(temp_file_name)
 
-                            return conversion_process.returncode, conversion_process.stderr()
+                            try:
+                                os.remove(temp_file_name)
+                            except IsADirectoryError:
+                                logging.error(f"unable to remove {temp_file_name} as it is a directory")
+                                pass
+                            else:
+                                logging.info(f"removed file {temp_file_name}")
+
+                            return conversion_process.returncode, conversion_process.stderr
                         else:
                             rcode, new_file = self._post_process(file=str(file),
                                                                  container_type=g_vars['TARGET_CONTAINER'])
@@ -104,7 +112,8 @@ class Converter(object):
                         pass
 
             except Exception as ex:
-                raise ex
+                logging.exception(ex)
+                return 1, ex
 
     def _post_process(self, container_type, file) -> (int, str):
         """
@@ -118,7 +127,7 @@ class Converter(object):
             if container_type == '.mkv' or container_type == '.mp4':
                 temp_file_name_unsanitized = file + '.converting' + container_type
             else:
-                temp_file_name_unsanitized = file + '.converting.mkv'
+                temp_file_name_unsanitized: str = file + '.converting.mkv'
             if re.search(".mkv$", file):
                 new_file_name = file
 

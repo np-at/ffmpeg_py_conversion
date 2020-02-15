@@ -8,6 +8,7 @@ dist
 .idea
 .env
 
+ffmp_conv.egg-info
 # User-specific files
 *.rsuser
 *.suo

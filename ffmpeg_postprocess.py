@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#
+
 # E-Mail post-processing script for NZBGet
 #
 # Copyright (C) 2013-2017 Andrey Prygunkov <hugbug@users.sourceforge.net>
@@ -199,6 +199,8 @@ if not test_mode:
                 conv_failed = True
                 pass
     if conv_failed:
+        print('[WARNING] %s'+ " conversion failed")
+
         sys.exit(POSTPROCESS_ERROR)
     else:
         # All OK, returning exit status 'POSTPROCESS_SUCCESS' (int <93>) to let NZBGet know

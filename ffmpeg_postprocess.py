@@ -47,6 +47,7 @@ import sys
 from urllib.parse import quote
 
 from ffmp_conv import ffmp
+from ffmp_conv.converter import Converter
 
 try:
     from xmlrpclib import ServerProxy  # python 2
@@ -176,9 +177,9 @@ text += '\nStatus: %s' % status
 
 # add list of downloaded files
 if os.environ.get('NZBPO_PLEX_URL') and os.environ.get('NZBPO_PLEX_TOKEN'):
-    conv = ffmp.Converter(PLEX_URL=os.environ['NZBPO_PLEX_URL'], PLEX_TOKEN=os.environ['NZBPO_PLEX_TOKEN'])
+    conv = Converter(PLEX_URL=os.environ['NZBPO_PLEX_URL'], PLEX_TOKEN=os.environ['NZBPO_PLEX_TOKEN'])
 else:
-    conv = ffmp.Converter()
+    conv = Converter()
 if not test_mode:
     conv_failed = False
     text += '\n\nFiles:'

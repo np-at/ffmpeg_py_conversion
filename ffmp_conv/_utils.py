@@ -1,16 +1,20 @@
 import json
 import logging
-import re
 import os
+import re
+import subprocess
+
+from hm_wrapper.sonarr import Sonarr
 from plexapi.server import PlexServer
 
 
 class ArgAssembler:
     def __init__(self, verbose: bool = False, adaptive: bool = True, background: int = 0, plex_url: str = None,
-                 plex_token: str = None):
+                 plex_token: str = None, **kwargs):
         self.verbose = verbose
         self.adaptive = adaptive
         self.background = background
+        self.other_args = kwargs
         if plex_token is not None and plex_url is not None:
             try:
                 self.plex = PlexServer(plex_url, plex_token)
@@ -176,8 +180,9 @@ class ArgAssembler:
     @staticmethod
     def ffmpeg_audio_conversion_argument(json_file_meta):
         # define the rules for audio conversion here
+        audio_args = set()
+
         try:
-            audio_args = set()
             streams = json_file_meta['streams']
 
             for s in streams:
@@ -192,11 +197,11 @@ class ArgAssembler:
         except Exception as ex:
             logging.error(f"error processing audio args; error: {ex}")
 
-        otherargspresent: bool
+        other_args_present: bool
         if len(audio_args) == 0:
-            otherargspresent = False
+            other_args_present = False
         else:
-            otherargspresent = True
+            other_args_present = True
         try:
             # if there are multiple audio streams, and one has language= english, then set it as the default stream for
             # playback
@@ -231,7 +236,7 @@ class ArgAssembler:
         if len(audio_args) == 0:
             return None
 
-        if otherargspresent is False:
+        if other_args_present is False:
             audio_args.add("-acodec copy")
 
         return audio_args
@@ -241,27 +246,27 @@ class ArgAssembler:
         # define the rules for audio conversion here
         # if re.search(".mkv$", containerType) is None:
         try:
-            subt_args = set()
+            subtitle_args = set()
             streams = json_file_meta['streams']
             for s in streams:
                 if s['codec_type'] == 'subtitle':
                     if s['codec_name'] == 'dvd_subtitle' or s['codec_name'] == 'hdmv_pgs_subtitle':
-                        subt_args.add(f'-scodec copy')
+                        subtitle_args.add(f'-scodec copy')
 
-                    #  subt_args.add(f"-map -0:{s['index']}")
+                    #  subtitle_args.add(f"-map -0:{s['index']}")
 
                     # remove subtitle stream mappings
                     # if s['channels'] != 2:
-                    #     subt_args.append("-ac 2")
+                    #     subtitle_args.append("-ac 2")
 
                     # for now just copy subtitles
 
-                    # if len(subt_args) == 0:
+                    # if len(subtitle_args) == 0:
                     # tell it not to map subtitles, mp4 doesn't support them as streams anyway
-                    #  subt_args.append("-scodec copy")
+                    #  subtitle_args.append("-scodec copy")
                 else:
                     pass
-            return subt_args
+            return subtitle_args
         except Exception as ex:
             print(ex)
             logging.error(f'error: {ex}')
@@ -285,3 +290,104 @@ class ArgAssembler:
         s_input = str(s_input).replace("\'", r)
 
         return s_input
+
+
+def get_media_from_sonarr(sonarr: Sonarr, conversion_profiles: dict, strict_profile_checking: bool = False):
+    return generate_conversion_lookup(conversion_profiles, sonarr)
+    #
+
+
+def dictMap(f, xs):
+    return dict((f(i), i) for i in xs)
+
+
+def generate_file_quality_mappings_list(sonarr: Sonarr, conversion_profiles: dict,
+                                        strict_profile_checking: bool = False) -> dict:
+    """
+    Generates a list of dict objects key=video file path on system, value = the desired quality settings
+    corresponding to the profile defined by the user
+    @param sonarr:
+    @param conversion_profiles:
+    @param strict_profile_checking:
+    @return:
+    """
+    conversion_lookup = generate_conversion_lookup(conversion_profiles, sonarr)
+    series = sonarr.get_series()
+    path_quality_mappings = dict()
+    for s in series:
+        quality_profile_settings = conversion_lookup[s['qualityProfileId']]
+        series_files = dict((p, quality_profile_settings) for p in list(
+            map(lambda x: x['path'], sonarr.get_episode_files_by_series_id(s['id']))))
+        path_quality_mappings.update(series_files)
+
+    return path_quality_mappings
+    # if strict_profile_checking:
+    #     conversion_profiles.keys().__contains__(s['qualityProfileId'])
+    # conversion_settings = conversion_profiles
+
+
+def generate_conversion_lookup(conversion_profiles: dict, sonarr: Sonarr):
+    quality_profiles = sonarr.get_quality_profiles()
+    id_names = dict(map(lambda x: (x['name'], x['id']), quality_profiles))
+    profile_mapping = dict()
+    for i in id_names.keys():
+        for p in conversion_profiles.keys():
+            if str(i).lower() == str(p).lower():
+                e = id_names[i]
+                profile_mapping[e] = conversion_profiles[p]
+                pass
+            else:
+                pass
+    return profile_mapping
+
+
+def probe(filename, cmd='ffprobe', **kwargs):
+    """Run ffprobe on the specified file and return a JSON representation of the output.
+
+    Raises:
+        :class:`ffmpeg.Error`: if ffprobe returns a non-zero exit code,
+            an :class:`Error` is returned with a generic error message.
+            The stderr output can be retrieved by accessing the
+            ``stderr`` property of the exception.
+    """
+    args = [cmd, '-show_format', '-show_streams', '-of', 'json']
+    args += convert_kwargs_to_cmd_line_args(kwargs)
+    args += [filename]
+
+    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = p.communicate()
+    if p.returncode != 0:
+        raise Error('ffprobe', out, err)
+    return json.loads(out.decode('utf-8'))
+
+def escape_chars(text, chars):
+    """Helper function to escape uncomfortable characters."""
+    text = str(text)
+    chars = list(set(chars))
+    if '\\' in chars:
+        chars.remove('\\')
+        chars.insert(0, '\\')
+    for ch in chars:
+        text = text.replace(ch, '\\' + ch)
+    return text
+
+
+
+def convert_kwargs_to_cmd_line_args(kwargs):
+    """Helper function to build command line arguments out of dict."""
+    args = []
+    for k in sorted(kwargs.keys()):
+        v = kwargs[k]
+        args.append('-{}'.format(k))
+        if v is not None:
+            args.append('{}'.format(v))
+    return args
+
+
+class Error(Exception):
+    def __init__(self, cmd, stdout, stderr):
+        super(Error, self).__init__(
+            '{} error (see stderr output for detail)'.format(cmd)
+        )
+        self.stdout = stdout
+        self.stderr = stderr

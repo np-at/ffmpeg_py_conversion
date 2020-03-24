@@ -4,7 +4,7 @@ import os
 import shutil
 import sys
 from asyncio import sleep
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Callable
 
 from ffmp_conv.EnvironmentalArgAssembler import EnvironmentalArgAssembler
 from ffmp_conv._utils import Error, _spawn, _spawn_async
@@ -108,20 +108,43 @@ def _run_file(cmds: List[str], init_file: str, intermediate_file: str, output_fi
 
 class Converter(object):
     def __init__(self,
-                 sonarr_url=None,
-                 sonarr_api=None,
-                 radarr_url=None,
-                 radarr_api=None,
-                 plex_url=None,
-                 plex_token=None,
+                 sonarr_url: str = None,
+                 sonarr_api: str = None,
+                 radarr_url: str = None,
+                 radarr_api: str = None,
+                 plex_url: str = None,
+                 plex_token: str = None,
                  adaptive: bool = False,
-                 wait_fxn=lambda: True,
-                 process_radarr_files=False,
-                 process_sonarr_files=False,
+                 wait_fxn: Callable[[any], bool] = lambda: True,
+                 process_radarr_files: bool = False,
+                 process_sonarr_files: bool = False,
                  **kwargs):
         """
-
+        An object to hold all the information we might need to run our conversion process (including ancillary stuff like
+        authentication credentials)
+        @param sonarr_url:
+        @type sonarr_url: str
+        @param sonarr_api:
+        @type sonarr_api: str
+        @param radarr_url:
+        @type radarr_url: str
+        @param radarr_api:
+        @type radarr_api: str
+        @param plex_url:
+        @type plex_url: str
+        @param plex_token:
+        @type plex_token: str
+        @param adaptive:
+        @type adaptive: bool
+        @param wait_fxn: Optional function to run between every process to determine whether to wait or not.  Should return a bool (go/no-go)
+        @type wait_fxn:
+        @param process_radarr_files:
+        @type process_radarr_files:
+        @param process_sonarr_files:
+        @type process_sonarr_files:
         @param kwargs:
+        @type kwargs:
+
         """
 
         self.process_sonarr_files = process_sonarr_files

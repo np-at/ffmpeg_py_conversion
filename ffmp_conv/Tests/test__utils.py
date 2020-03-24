@@ -9,10 +9,13 @@ SAMPLE_DATA_DIR = os.path.join(TEST_DIR, 'sample_data')
 
 TEST_INPUT_FILE1 = os.path.join(SAMPLE_DATA_DIR, 'in1.mp4')
 
+
 def async_test(f):
     def wrapper(*args, **kwargs):
         asyncio.run(f(*args, **kwargs))
+
     return wrapper
+
 
 class Test(TestCase):
     def test_probe(self):

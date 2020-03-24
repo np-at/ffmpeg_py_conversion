@@ -32,10 +32,10 @@
 ### OPTIONS                                                       ###
 
 # Url of the Plex Server
-#PLEX_URL="http://10.0.0.1/"
+#plex_url="http://10.0.0.1/"
 
 # Token for Plex Authentication
-#PLEX_TOKEN="NZBGet" <myaccount@gmail.com>
+#plex_token="NZBGet" <myaccount@gmail.com>
 
 
 ### NZBGET POST-PROCESSING SCRIPT                                          ###
@@ -44,13 +44,11 @@
 
 import os
 import sys
-from urllib.parse import quote
 
-from ffmp_conv import ffmp
 from ffmp_conv.converter import Converter
 
 try:
-    from xmlrpclib import ServerProxy  # python 2
+    from xmlrpc.server import ServerProxy  # python 2
 except ImportError:
     from xmlrpc.client import ServerProxy  # python 3
 
@@ -120,13 +118,13 @@ text += '\nStatus: %s' % status
 #     # environment variables.
 #     host = os.environ['NZBOP_CONTROLIP'];
 #     port = os.environ['NZBOP_CONTROLPORT'];
-#     username = os.environ['NZBOP_CONTROLUSERNAME'];
+#     sonarr_url = os.environ['NZBOP_CONTROLUSERNAME'];
 #     password = os.environ['NZBOP_CONTROLPASSWORD'];
 #
 #     if host == '0.0.0.0': host = '127.0.0.1'
 #
 #     # Build a URL for XML-RPC requests
-#     rpcUrl = 'http://%s:%s@%s:%s/xmlrpc' % (quote(username), quote(password), host, port);
+#     rpcUrl = 'http://%s:%s@%s:%s/xmlrpc' % (quote(sonarr_url), quote(password), host, port);
 #
 #     # Create remote server object
 #     server = ServerProxy(rpcUrl)
@@ -177,7 +175,7 @@ text += '\nStatus: %s' % status
 
 # add list of downloaded files
 if os.environ.get('NZBPO_PLEX_URL') and os.environ.get('NZBPO_PLEX_TOKEN'):
-    conv = Converter(PLEX_URL=os.environ['NZBPO_PLEX_URL'], PLEX_TOKEN=os.environ['NZBPO_PLEX_TOKEN'])
+    conv = Converter(plex_url=os.environ['NZBPO_PLEX_URL'], plex_token=os.environ['NZBPO_PLEX_TOKEN'])
 else:
     conv = Converter()
 if not test_mode:

@@ -9,5 +9,5 @@ setup(
     author='np-at',
     author_email='',
     description='',
-    install_requires=['python-ffmpeg', 'plexapi']
+    install_requires=['plexapi', 'hm_wrapper']
 )
